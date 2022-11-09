@@ -43,5 +43,24 @@ def get_data():
     X = pd.concat([dataframe.drop('type', axis=1), pd.get_dummies(dataframe['type'])], axis=1)
     y = X[['isFraud']]
     X = X.drop(['isFraud'],axis=1)
+    
+    logging.info("Splitting data for training")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3,random_state=42, shuffle=True)
-    return X_train, X_test, y_train, y_test
+    data_train = xgb.DMatrix(X_train, label=y_train)
+    
+    logging.info("Finishing get_data")
+    return data_train, X_test, y_test
+
+# Function to train the model
+def train_model(data_train):
+    logging.info("Start training ...")
+    params = {
+        'objective': 'multi:softprob',
+        'num_class': 2
+    }
+    model = xgb.train(params, data_train, num_boost_round=args.boost_rounds)
+    logging.info("Training completed")
+    return model
+
+data_train, X_test, y_test = get_data()
+model = train_model(data_train)
