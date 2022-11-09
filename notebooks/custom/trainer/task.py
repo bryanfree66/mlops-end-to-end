@@ -10,7 +10,7 @@ import logging
 import numpy as np
 
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix
 from google.cloud import bigquery
 
 # SET UP TRAINING SCRIPT ARGUMENTS
@@ -21,8 +21,6 @@ parser.add_argument("--project-id", dest="project_id",
                     type=str, help="Project id for bigquery client.")
 parser.add_argument("--bq-table", dest="bq_table",
                     type=str, help="Download url for the training data.")
-parser.add_argument("--boost-rounds", dest="boost_rounds",
-                    default=20, type=int, help="Number of boosted rounds")
 args = parser.parse_args()
 
 logging.getLogger().setLevel(logging.INFO)
@@ -39,6 +37,7 @@ def get_data():
     dataframe = rows.to_dataframe()
     
     logging.info("Preparing data for training")
+    dataframe["isFraud"] = dataframe["isFraud"].astype(int)
     dataframe.drop(['nameOrig','nameDest','isFlaggedFraud'],axis=1,inplace=True)
     X = pd.concat([dataframe.drop('type', axis=1), pd.get_dummies(dataframe['type'])], axis=1)
     y = X[['isFraud']]
@@ -46,19 +45,15 @@ def get_data():
     
     logging.info("Splitting data for training")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3,random_state=42, shuffle=True)
-    data_train = xgb.DMatrix(X_train, label=y_train)
     
     logging.info("Finishing get_data")
-    return data_train, X_test, y_test
+    return X_train, X_test, y_train, y_test
 
 # Function to train the model
-def train_model(data_train):
+def train_model(X_train, y_train):
     logging.info("Start training ...")
-    params = {
-        'objective': 'multi:softprob',
-        'num_class': 2
-    }
-    model = xgb.train(params, data_train, num_boost_round=args.boost_rounds)
+    model = xgb.XGBClassifier(scale_pos_weight=734)
+    model.fit(X_train, y_train)
     
     logging.info("Training completed")
     return model
@@ -69,29 +64,30 @@ def evaluate_model(model, X_test, y_test):
     data_test = xgb.DMatrix(X_test)
     
     logging.info("Getting test predictions ...")
-    pred = model.predict(data_test)
-    predictions = [np.around(value) for value in pred]
+    y_pred = model.predict(X_test)
     
     logging.info("Evaluating predictions ...")
-    try:
-        accuracy = accuracy_score(y_test, predictions)
-    except:
-        accuracy = 0.0
-    logging.info(f"Evaluation completed with model accuracy: {accuracy}")
+    #try:
+    # accuracy = accuracy_score(y_test, predictions)
+    #except:
+    #    accuracy = 0.0
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+    specificity = tn / (tn+fp)
+    logging.info(f"Evaluation completed with model specificity: {specificity}")
 
     logging.info("Report metric for hyperparameter tuning ...")
     hpt = hypertune.HyperTune()
     hpt.report_hyperparameter_tuning_metric(
-        hyperparameter_metric_tag='accuracy',
-        metric_value=accuracy
+        hyperparameter_metric_tag='specificity',
+        metric_value=specificity
     )
     
     logging.info("Finishing ...")
-    return accuracy
+    return specificity
 
-data_train, X_test, y_test = get_data()
-model = train_model(data_train)
-accuracy = evaluate_model(model, X_test, y_test)
+X_train, X_test, y_train, y_test = get_data()
+model = train_model(X_train, y_train)
+specificity = evaluate_model(model, X_test, y_test)
 
 # GCSFuse conversion
 gs_prefix = 'gs://'
@@ -110,4 +106,4 @@ model.save_model(gcs_model_path)
 logging.info("Saving metrics to {}/metrics.json". format(args.model_dir))
 gcs_metrics_path = os.path.join(args.model_dir, 'metrics.json')
 with open(gcs_metrics_path, "w") as f:
-    f.write(f"{'accuracy: {accuracy}'}")
+    f.write(f"{'specificity: {specificity}'}")
