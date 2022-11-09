@@ -59,8 +59,55 @@ def train_model(data_train):
         'num_class': 2
     }
     model = xgb.train(params, data_train, num_boost_round=args.boost_rounds)
+    
     logging.info("Training completed")
     return model
 
+# Function to evaluate the model
+def evaluate_model(model, X_test, y_test):
+    logging.info("Preparing test data ...")
+    data_test = xgb.DMatrix(X_test)
+    
+    logging.info("Getting test predictions ...")
+    pred = model.predict(data_test)
+    predictions = [np.around(value) for value in pred]
+    
+    logging.info("Evaluating predictions ...")
+    try:
+        accuracy = accuracy_score(y_test, predictions)
+    except:
+        accuracy = 0.0
+    logging.info(f"Evaluation completed with model accuracy: {accuracy}")
+
+    logging.info("Report metric for hyperparameter tuning ...")
+    hpt = hypertune.HyperTune()
+    hpt.report_hyperparameter_tuning_metric(
+        hyperparameter_metric_tag='accuracy',
+        metric_value=accuracy
+    )
+    
+    logging.info("Finishing ...")
+    return accuracy
+
 data_train, X_test, y_test = get_data()
 model = train_model(data_train)
+accuracy = evaluate_model(model, X_test, y_test)
+
+# GCSFuse conversion
+gs_prefix = 'gs://'
+gcsfuse_prefix = '/gcs/'
+if args.model_dir.startswith(gs_prefix):
+    args.model_dir = args.model_dir.replace(gs_prefix, gcsfuse_prefix)
+    dirpath = os.path.split(args.model_dir)[0]
+    if not os.path.isdir(dirpath):
+        os.makedirs(dirpath)
+
+# Export the classifier to a file
+gcs_model_path = os.path.join(args.model_dir, 'model.bst')
+logging.info("Saving model artifacts to {}". format(gcs_model_path))
+model.save_model(gcs_model_path)
+
+logging.info("Saving metrics to {}/metrics.json". format(args.model_dir))
+gcs_metrics_path = os.path.join(args.model_dir, 'metrics.json')
+with open(gcs_metrics_path, "w") as f:
+    f.write(f"{'accuracy: {accuracy}'}")
