@@ -1,10 +1,8 @@
 import datetime
 import os
-import subprocess
 import sys
 import pandas as pd
 import xgboost as xgb
-import hypertune
 import argparse
 import logging
 import numpy as np
@@ -12,7 +10,16 @@ import json
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
+
+import subprocess
+subprocess.check_call(['pip3', 'install', "--upgrade",
+                       "google-cloud-aiplatform", 
+                       "google-cloud-bigquery"], 
+                      stderr=sys.stdout
+                     )
+
 from google.cloud import bigquery
+import google.cloud.aiplatform as aiplatform
 
 # SET UP TRAINING SCRIPT ARGUMENTS
 parser = argparse.ArgumentParser()
@@ -21,11 +28,16 @@ parser.add_argument('--model-dir', dest='model_dir',
 parser.add_argument("--project-id", dest="project_id",
                     type=str, help="Project id for bigquery client.")
 parser.add_argument("--bq-table", dest="bq_table",
-                    type=str, help="Download url for the training data.")
-parser.add_argument('--max-depth', dest="max_depth",
-                    type=int, help='Max depth of XGB tree', default=3)
-parser.add_argument('--learning-rate', dest="learning_rate",
-                    type=float, help='Learning rate of XGB model', default=0.1)
+                    type=str, help="Table location the training data.")
+
+# Args for experiment
+parser.add_argument('--experiment', dest='experiment',
+                    required=True, type=str,
+                    help='Name of experiment')
+parser.add_argument('--run', dest='run',
+                    required=True, type=str,
+                    help='Name of run within the experiment')
+
 args = parser.parse_args()
 
 logging.getLogger().setLevel(logging.INFO)
@@ -59,8 +71,8 @@ def train_model(X_train, y_train):
     logging.info("Start training ...")
     model = xgb.XGBClassifier(
             scale_pos_weight=734,
-            max_depth=args.max_depth,
-            learning_rate=args.learning_rate
+            max_depth=7
+            learning_rate=0.03289820323933852
     )
     model.fit(X_train, y_train)
     
@@ -78,37 +90,39 @@ def evaluate_model(model, X_test, y_test):
     logging.info("Evaluating predictions ...")
     f1 = f1_score(y_test, y_pred, average='weighted')
     logging.info(f"Evaluation completed with weighted f1 score: {f1}")
-
-    logging.info("Report metric for hyperparameter tuning ...")
-    hpt = hypertune.HyperTune()
-    hpt.report_hyperparameter_tuning_metric(
-        hyperparameter_metric_tag='f1_score',
-        metric_value=f1
-    )
     
     logging.info("Finishing ...")
     return f1
 
-X_train, X_test, y_train, y_test = get_data()
-model = train_model(X_train, y_train)
-f1 = evaluate_model(model, X_test, y_test)
-metric_dict = {'f1_score': f1}
 
-# GCSFuse conversion
-gs_prefix = 'gs://'
-gcsfuse_prefix = '/gcs/'
-if args.model_dir.startswith(gs_prefix):
-    args.model_dir = args.model_dir.replace(gs_prefix, gcsfuse_prefix)
-    dirpath = os.path.split(args.model_dir)[0]
-    if not os.path.isdir(dirpath):
-        os.makedirs(dirpath)
+# Create a run within the experiment
+aiplatform.init(experiment=args.experiment)
+aiplatform.start_run(args.run)
 
-# Export the classifier to a file
-gcs_model_path = os.path.join(args.model_dir, 'model.bst')
-logging.info("Saving model artifacts to {}". format(gcs_model_path))
-model.save_model(gcs_model_path)
+with aiplatform.start_execution(
+    schema_title="system.ContainerExecution", display_name="xgboost_training"
+) as execution:
+    logging.info("Starting execution ...")
+    X_train, X_test, y_train, y_test = get_data()
+    model = train_model(X_train, y_train)
 
-logging.info("Saving metrics to {}/metrics.json". format(args.model_dir))
-gcs_metrics_path = os.path.join(args.model_dir, 'metrics.json')
-with open(gcs_metrics_path, "w") as f:
-    f.write(json.dumps(metric_dict))
+    # GCSFuse conversion
+    gs_prefix = 'gs://'
+    gcsfuse_prefix = '/gcs/'
+    if args.model_dir.startswith(gs_prefix):
+        args.model_dir = args.model_dir.replace(gs_prefix, gcsfuse_prefix)
+        dirpath = os.path.split(args.model_dir)[0]
+        if not os.path.isdir(dirpath):
+            os.makedirs(dirpath)
+
+    # Export the classifier to a file
+    gcs_model_path = os.path.join(args.model_dir, 'model.bst')
+    logging.info("Saving model artifacts to {}". format(gcs_model_path))
+    model.save_model(gcs_model_path)
+
+    logging.info("Saving metrics to {}/metrics.json". format(args.model_dir))
+    gcs_metrics_path = os.path.join(args.model_dir, 'metrics.json')
+    with open(gcs_metrics_path, "w") as f:
+        f.write(json.dumps(metric_dict))
+
+aiplatform.end_run()
