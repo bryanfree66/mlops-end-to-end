@@ -1,0 +1,201 @@
+{
+  "pipelineSpec": {
+    "components": {
+      "comp-custom-train-model": {
+        "executorLabel": "exec-custom-train-model",
+        "inputDefinitions": {
+          "parameters": {
+            "base_output_directory": {
+              "type": "STRING"
+            },
+            "bq_table": {
+              "type": "STRING"
+            },
+            "learning_rate": {
+              "type": "DOUBLE"
+            },
+            "location": {
+              "type": "STRING"
+            },
+            "max_depth": {
+              "type": "INT"
+            },
+            "model_dir": {
+              "type": "STRING"
+            },
+            "network": {
+              "type": "STRING"
+            },
+            "project": {
+              "type": "STRING"
+            },
+            "project_id": {
+              "type": "STRING"
+            },
+            "service_account": {
+              "type": "STRING"
+            },
+            "tensorboard": {
+              "type": "STRING"
+            }
+          }
+        },
+        "outputDefinitions": {
+          "parameters": {
+            "gcp_resources": {
+              "type": "STRING"
+            }
+          }
+        }
+      }
+    },
+    "deploymentSpec": {
+      "executors": {
+        "exec-custom-train-model": {
+          "container": {
+            "args": [
+              "--type",
+              "CustomJob",
+              "--payload",
+              "{\"display_name\": \"Custom train model\", \"job_spec\": {\"worker_pool_specs\": [{\"machine_spec\": {\"machine_type\": \"n1-standard-4\"}, \"replica_count\": 1, \"container_spec\": {\"image_uri\": \"python:3.9\", \"command\": [\"sh\", \"-c\", \"\\nif ! [ -x \\\"$(command -v pip)\\\" ]; then\\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\\nfi\\n\\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'xgboost' 'pandas' 'scikit-learn==1.0.2' 'fsspec' 'gcsfs' 'google-cloud-bigquery' 'db_dtypes' 'google-cloud-storage' 'kfp==1.8.18' && \\\"$0\\\" \\\"$@\\\"\\n\", \"sh\", \"-ec\", \"program_path=$(mktemp -d)\\nprintf \\\"%s\\\" \\\"$0\\\" > \\\"$program_path/ephemeral_component.py\\\"\\npython3 -m kfp.v2.components.executor_main                         --component_module_path                         \\\"$program_path/ephemeral_component.py\\\"                         \\\"$@\\\"\\n\", \"\\nimport kfp\\nfrom kfp.v2 import dsl\\nfrom kfp.v2.dsl import *\\nfrom typing import *\\n\\ndef custom_train_model(\\n    model_dir: str,\\n    bq_table: str,\\n    project_id: str,\\n    max_depth: int = 3,\\n    learning_rate: float = 0.1,\\n):\\n    import datetime\\n    import os\\n    import subprocess\\n    import sys\\n    import pandas as pd\\n    import xgboost as xgb\\n    import argparse\\n    import logging\\n    import numpy as np\\n    import json\\n\\n    from sklearn.model_selection import train_test_split\\n    from sklearn.metrics import f1_score\\n    from google.cloud import bigquery\\n    from google.cloud import storage\\n\\n\\n    # Function to retrieve data from BigQuery\\n    def get_data(project_id, bq_table):\\n        logging.info(\\\"Downloading training data from BigQuery: {}, {}\\\".format(project_id, bq_table))\\n        logging.info(\\\"Creating BigQuery client\\\")\\n        bqclient = bigquery.Client(project=project_id)\\n\\n        logging.info(\\\"Loading table data\\\")\\n        table = bigquery.TableReference.from_string(bq_table)\\n        rows = bqclient.list_rows(table)\\n        dataframe = rows.to_dataframe()\\n\\n        logging.info(\\\"Preparing data for training\\\")\\n        dataframe[\\\"isFraud\\\"] = dataframe[\\\"isFraud\\\"].astype(int)\\n        dataframe.drop(['nameOrig','nameDest','isFlaggedFraud'],axis=1,inplace=True)\\n        X = pd.concat([dataframe.drop('type', axis=1), pd.get_dummies(dataframe['type'])], axis=1)\\n        y = X[['isFraud']]\\n        X = X.drop(['isFraud'],axis=1)\\n\\n        print(\\\"Splitting data for training\\\")\\n        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3,random_state=42, shuffle=True)\\n\\n        logging.info(\\\"Finishing get_data\\\")\\n        return X_train, X_test, y_train, y_test\\n\\n    # Function to train the model\\n    def train_model(X_train, y_train, max_depth, learning_rate):\\n        logging.info(\\\"Start training ...\\\")\\n        model = xgb.XGBClassifier(\\n                scale_pos_weight=734,\\n                max_depth=max_depth,\\n                learning_rate=learning_rate\\n        )\\n        model.fit(X_train, y_train)\\n\\n        logging.info(\\\"Training completed\\\")\\n        return model\\n\\n    # Function to evaluate the model\\n    def evaluate_model(model, X_test, y_test):\\n        logging.info(\\\"Preparing test data ...\\\")\\n        data_test = xgb.DMatrix(X_test)\\n\\n        logging.info(\\\"Getting test predictions ...\\\")\\n        y_pred = model.predict(X_test)\\n\\n        logging.info(\\\"Evaluating predictions ...\\\")\\n        f1 = f1_score(y_test, y_pred, average='weighted')\\n        logging.info(f\\\"Evaluation completed with weighted f1 score: {f1}\\\")\\n\\n        logging.info(\\\"Finishing ...\\\")\\n        return f1\\n\\n    # Start of function\\n    logging.info(\\\"Component start\\\")\\n\\n    X_train, X_test, y_train, y_test = get_data(project_id, bq_table)\\n    print(\\\"Training the model\\\")\\n    model = train_model(X_train, y_train, max_depth, learning_rate)\\n    print(\\\"Evaluating the model\\\")\\n    f1 = evaluate_model(model, X_test, y_test)\\n    metric_dict = {'f1_score': f1}\\n\\n    # GCSFuse conversion\\n    gs_prefix = 'gs://'\\n    gcsfuse_prefix = '/gcs/'\\n    if model_dir.startswith(gs_prefix):\\n        model_dir = model_dir.replace(gs_prefix, gcsfuse_prefix)\\n        dirpath = os.path.split(model_dir)[0]\\n        if not os.path.isdir(dirpath):\\n            os.makedirs(dirpath)\\n\\n    # Export the classifier to a file\\n    gcs_model_path = os.path.join(model_dir, 'model.bst')\\n    logging.info(\\\"Saving model artifacts to {}\\\". format(gcs_model_path))\\n    model.save_model(gcs_model_path)\\n\\n    logging.info(\\\"Saving metrics to {}/metrics.json\\\". format(model_dir))\\n    gcs_metrics_path = os.path.join(model_dir, 'metrics.json')\\n    with open(gcs_metrics_path, \\\"w\\\") as f:\\n        f.write(json.dumps(metric_dict))\\n\\n\"], \"args\": [\"--executor_input\", \"{{$.json_escape[1]}}\", \"--function_to_execute\", \"custom_train_model\"]}, \"disk_spec\": {\"boot_disk_type\": \"pd-ssd\", \"boot_disk_size_gb\": 100}}], \"service_account\": \"{{$.inputs.parameters['service_account']}}\", \"network\": \"{{$.inputs.parameters['network']}}\", \"tensorboard\": \"{{$.inputs.parameters['tensorboard']}}\", \"base_output_directory\": {\"output_uri_prefix\": \"{{$.inputs.parameters['base_output_directory']}}\"}}}",
+              "--project",
+              "{{$.inputs.parameters['project']}}",
+              "--location",
+              "{{$.inputs.parameters['location']}}",
+              "--gcp_resources",
+              "{{$.outputs.parameters['gcp_resources'].output_file}}"
+            ],
+            "command": [
+              "python3",
+              "-u",
+              "-m",
+              "google_cloud_pipeline_components.container.v1.custom_job.launcher"
+            ],
+            "image": "gcr.io/ml-pipeline/google-cloud-pipeline-components:1.0.32"
+          }
+        }
+      }
+    },
+    "pipelineInfo": {
+      "name": "fraud-xgboost"
+    },
+    "root": {
+      "dag": {
+        "tasks": {
+          "custom-train-model": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-custom-train-model"
+            },
+            "inputs": {
+              "parameters": {
+                "base_output_directory": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": "gs://bq-experiments-fraud/pipeline_root/custom_xgboost_training"
+                    }
+                  }
+                },
+                "bq_table": {
+                  "componentInputParameter": "bq_table"
+                },
+                "learning_rate": {
+                  "componentInputParameter": "learning_rate"
+                },
+                "location": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": "us-central1"
+                    }
+                  }
+                },
+                "max_depth": {
+                  "componentInputParameter": "max_depth"
+                },
+                "model_dir": {
+                  "componentInputParameter": "model_dir"
+                },
+                "network": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": ""
+                    }
+                  }
+                },
+                "project": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": "bq-experiments-350102"
+                    }
+                  }
+                },
+                "project_id": {
+                  "componentInputParameter": "project_id"
+                },
+                "service_account": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": ""
+                    }
+                  }
+                },
+                "tensorboard": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "stringValue": ""
+                    }
+                  }
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "custom-train-model"
+            }
+          }
+        }
+      },
+      "inputDefinitions": {
+        "parameters": {
+          "bq_table": {
+            "type": "STRING"
+          },
+          "learning_rate": {
+            "type": "DOUBLE"
+          },
+          "max_depth": {
+            "type": "INT"
+          },
+          "model_dir": {
+            "type": "STRING"
+          },
+          "project_id": {
+            "type": "STRING"
+          }
+        }
+      }
+    },
+    "schemaVersion": "2.0.0",
+    "sdkVersion": "kfp-1.8.18"
+  },
+  "runtimeConfig": {
+    "parameters": {
+      "bq_table": {
+        "stringValue": "bq-experiments-350102.synthetic_financial_fraud.fraud_data"
+      },
+      "learning_rate": {
+        "doubleValue": 6e-08
+      },
+      "max_depth": {
+        "intValue": "1"
+      },
+      "model_dir": {
+        "stringValue": "gs://bq-experiments-fraud/model"
+      },
+      "project_id": {
+        "stringValue": "bq-experiments-350102"
+      }
+    }
+  }
+}

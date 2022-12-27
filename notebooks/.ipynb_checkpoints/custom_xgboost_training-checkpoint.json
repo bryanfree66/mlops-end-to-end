@@ -1,0 +1,160 @@
+{
+  "pipelineSpec": {
+    "components": {
+      "comp-custompythonpackagetrainingjob-run": {
+        "executorLabel": "exec-custompythonpackagetrainingjob-run",
+        "inputDefinitions": {
+          "parameters": {
+            "display_name": {
+              "type": "STRING"
+            },
+            "model_display_name": {
+              "type": "STRING"
+            },
+            "project": {
+              "type": "STRING"
+            },
+            "python_module_name": {
+              "type": "STRING"
+            },
+            "python_package_gcs_uri": {
+              "type": "STRING"
+            }
+          }
+        },
+        "outputDefinitions": {
+          "artifacts": {
+            "model": {
+              "artifactType": {
+                "schemaTitle": "google.VertexModel",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          }
+        }
+      }
+    },
+    "deploymentSpec": {
+      "executors": {
+        "exec-custompythonpackagetrainingjob-run": {
+          "container": {
+            "args": [
+              "--init.container_uri",
+              "us-docker.pkg.dev/vertex-ai/training/xgboost-cpu.1-1:latest",
+              "--init.staging_bucket",
+              "gs://bq-experiments-fraud/pipeline_root/custom_xgboost_training",
+              "--init.model_serving_container_image_uri",
+              "us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-1:latest",
+              "--method.args",
+              "['--project-id', 'bq-experiments-350102', '--bq-table', 'bq-experiments-350102.synthetic_financial_fraud.fraud_data', '--model-dir', 'gs://bq-experiments-fraud/p0vn3y8e', '--max-depth', 1, '--learning-rate', 6e-08]",
+              "--method.replica_count",
+              "1",
+              "--method.machine_type",
+              "n1-standard-8",
+              "--executor_input",
+              "{{$}}",
+              "--resource_name_output_artifact_uri",
+              "{{$.outputs.artifacts['model'].uri}}",
+              "--init.project",
+              "{{$.inputs.parameters['project']}}",
+              "--init.display_name",
+              "{{$.inputs.parameters['display_name']}}",
+              "--init.python_package_gcs_uri",
+              "{{$.inputs.parameters['python_package_gcs_uri']}}",
+              "--init.python_module_name",
+              "{{$.inputs.parameters['python_module_name']}}",
+              "--method.model_display_name",
+              "{{$.inputs.parameters['model_display_name']}}"
+            ],
+            "command": [
+              "python3",
+              "-m",
+              "google_cloud_pipeline_components.container.aiplatform.remote_runner",
+              "--cls_name",
+              "CustomPythonPackageTrainingJob",
+              "--method_name",
+              "run"
+            ],
+            "image": "gcr.io/ml-pipeline/google-cloud-pipeline-components:1.0.32"
+          }
+        }
+      }
+    },
+    "pipelineInfo": {
+      "name": "fraud-xgboost"
+    },
+    "root": {
+      "dag": {
+        "tasks": {
+          "custompythonpackagetrainingjob-run": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-custompythonpackagetrainingjob-run"
+            },
+            "inputs": {
+              "parameters": {
+                "display_name": {
+                  "componentInputParameter": "display_name"
+                },
+                "model_display_name": {
+                  "componentInputParameter": "display_name"
+                },
+                "project": {
+                  "componentInputParameter": "project"
+                },
+                "python_module_name": {
+                  "componentInputParameter": "python_module"
+                },
+                "python_package_gcs_uri": {
+                  "componentInputParameter": "python_package"
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "custompythonpackagetrainingjob-run"
+            }
+          }
+        }
+      },
+      "inputDefinitions": {
+        "parameters": {
+          "bucket": {
+            "type": "STRING"
+          },
+          "display_name": {
+            "type": "STRING"
+          },
+          "project": {
+            "type": "STRING"
+          },
+          "python_module": {
+            "type": "STRING"
+          },
+          "python_package": {
+            "type": "STRING"
+          },
+          "region": {
+            "type": "STRING"
+          }
+        }
+      }
+    },
+    "schemaVersion": "2.0.0",
+    "sdkVersion": "kfp-1.8.18"
+  },
+  "runtimeConfig": {
+    "parameters": {
+      "bucket": {
+        "stringValue": "gs://bq-experiments-fraud/pipeline_root/custom_xgboost_training"
+      },
+      "project": {
+        "stringValue": "bq-experiments-350102"
+      },
+      "region": {
+        "stringValue": "us-central1"
+      }
+    }
+  }
+}
