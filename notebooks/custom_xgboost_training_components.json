@@ -1,0 +1,353 @@
+{
+  "pipelineSpec": {
+    "components": {
+      "comp-evaluate-model": {
+        "executorLabel": "exec-evaluate-model",
+        "inputDefinitions": {
+          "artifacts": {
+            "test_data": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "test_lables": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "xgb_model": {
+              "artifactType": {
+                "schemaTitle": "system.Model",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          }
+        },
+        "outputDefinitions": {
+          "artifacts": {
+            "metric": {
+              "artifactType": {
+                "schemaTitle": "system.Metrics",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          }
+        }
+      },
+      "comp-get-data": {
+        "executorLabel": "exec-get-data",
+        "inputDefinitions": {
+          "parameters": {
+            "bq_table": {
+              "type": "STRING"
+            },
+            "project_id": {
+              "type": "STRING"
+            }
+          }
+        },
+        "outputDefinitions": {
+          "artifacts": {
+            "test_dataset": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "test_lables": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "train_dataset": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "train_lables": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          }
+        }
+      },
+      "comp-train-model": {
+        "executorLabel": "exec-train-model",
+        "inputDefinitions": {
+          "artifacts": {
+            "train_data": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            },
+            "train_lables": {
+              "artifactType": {
+                "schemaTitle": "system.Dataset",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          },
+          "parameters": {
+            "learning_rate": {
+              "type": "DOUBLE"
+            },
+            "max_depth": {
+              "type": "INT"
+            }
+          }
+        },
+        "outputDefinitions": {
+          "artifacts": {
+            "xgb_model": {
+              "artifactType": {
+                "schemaTitle": "system.Model",
+                "schemaVersion": "0.0.1"
+              }
+            }
+          }
+        }
+      }
+    },
+    "deploymentSpec": {
+      "executors": {
+        "exec-evaluate-model": {
+          "container": {
+            "args": [
+              "--executor_input",
+              "{{$}}",
+              "--function_to_execute",
+              "evaluate_model"
+            ],
+            "command": [
+              "sh",
+              "-c",
+              "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'xgboost' 'scikit-learn==1.0.2' 'pandas' 'fsspec' 'gcsfs' 'google-cloud-storage' 'kfp==1.8.18' && \"$0\" \"$@\"\n",
+              "sh",
+              "-ec",
+              "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.v2.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+              "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing import *\n\ndef evaluate_model(\n    xgb_model: Input[Model], \n    test_data: Input[Dataset], \n    test_lables: Input[Dataset],\n    metric: Output[Metrics]\n\n):\n    import pandas as pd\n    import logging\n    import pickle\n    import numpy as np\n    import xgboost as xgb\n    import json\n    import os\n\n    from sklearn.metrics import f1_score\n    from google.cloud import storage\n\n    logging.info(\"Loading test data...\")\n    X_test = pd.read_csv(test_data.path+\".csv\")\n    print('X_test shape: {}'.format(X_test.shape))\n    y_test = pd.read_csv(test_lables.path+\".csv\")\n    print('y_test shape: {}'.format(y_test.shape))\n\n    print(\"restoring the model from {}\".format(xgb_model.path))\n    model = xgb.XGBClassifier()\n    file_name = xgb_model.path + \".pkl\"\n    with open(file_name, 'rb') as file:  \n        model = pickle.load(file)\n    print(\"model restored\")\n\n    logging.info(\"Preparing test data ...\")\n    # data = xgb.DMatrix(X_test.values)\n\n    logging.info(\"Getting test predictions ...\")\n    y_pred = model.predict(X_test)\n\n    logging.info(\"Evaluating predictions ...\")\n    f1 = f1_score(y_test, y_pred, average='weighted')\n    logging.info(f\"Evaluation completed with weighted f1 score: {f1}\")\n\n    metric.log_metric(\"f1_score\", float(f1))\n    logging.info(\"Finishing ...\")\n\n"
+            ],
+            "image": "python:3.9"
+          }
+        },
+        "exec-get-data": {
+          "container": {
+            "args": [
+              "--executor_input",
+              "{{$}}",
+              "--function_to_execute",
+              "get_data"
+            ],
+            "command": [
+              "sh",
+              "-c",
+              "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'pandas' 'pyarrow' 'scikit-learn==1.0.2' 'fsspec' 'gcsfs' 'google-cloud-bigquery' 'db_dtypes' 'google-cloud-storage' 'kfp==1.8.18' && \"$0\" \"$@\"\n",
+              "sh",
+              "-ec",
+              "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.v2.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+              "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing import *\n\ndef get_data(\n    project_id: str,\n    bq_table: str,\n    train_dataset: Output[Dataset],\n    test_dataset: Output[Dataset],\n    train_lables: Output[Dataset],\n    test_lables: Output[Dataset],\n):\n    import pandas as pd\n    import logging\n    import numpy as np\n    import json\n\n    from sklearn.model_selection import train_test_split\n    from google.cloud import bigquery\n    from google.cloud import storage\n\n    logging.info(\"Downloading training data from BigQuery: {}, {}\".format(project_id, bq_table))\n    logging.info(\"Creating BigQuery client\")\n    bqclient = bigquery.Client(project=project_id)\n\n    logging.info(\"Loading table data\")\n    table = bigquery.TableReference.from_string(bq_table)\n    rows = bqclient.list_rows(table)\n    dataframe = rows.to_dataframe()\n\n    logging.info(\"Preparing data for training\")\n    dataframe[\"isFraud\"] = dataframe[\"isFraud\"].astype(int)\n    dataframe.drop(['nameOrig','nameDest','isFlaggedFraud'],axis=1,inplace=True)\n    X = pd.concat([dataframe.drop('type', axis=1), pd.get_dummies(dataframe['type'])], axis=1)\n    y = X[['isFraud']]\n    X = X.drop(['isFraud'],axis=1)\n\n    print(\"Splitting data for training\")\n    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3,random_state=42, shuffle=True)\n\n    logging.info(\"Saving data\")\n    X_train.to_csv(train_dataset.path + \".csv\" , index=False, encoding='utf-8-sig')\n    X_test.to_csv(test_dataset.path + \".csv\" , index=False, encoding='utf-8-sig')\n    y_train.to_csv(train_lables.path + \".csv\" , index=False, encoding='utf-8-sig')\n    y_test.to_csv(test_lables.path + \".csv\" , index=False, encoding='utf-8-sig')\n\n"
+            ],
+            "image": "python:3.9"
+          }
+        },
+        "exec-train-model": {
+          "container": {
+            "args": [
+              "--executor_input",
+              "{{$}}",
+              "--function_to_execute",
+              "train_model"
+            ],
+            "command": [
+              "sh",
+              "-c",
+              "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'xgboost' 'scikit-learn==1.0.2' 'pandas' 'fsspec' 'gcsfs' 'google-cloud-storage' 'kfp==1.8.18' && \"$0\" \"$@\"\n",
+              "sh",
+              "-ec",
+              "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.v2.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+              "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing import *\n\ndef train_model(\n    train_data: Input[Dataset],\n    train_lables: Input[Dataset],\n    max_depth: int,\n    learning_rate: float,\n    xgb_model: Output[Model]\n):\n    import pandas as pd\n    import logging\n    import pickle\n    import numpy as np\n    import json\n    import xgboost as xgb\n    import os\n\n    from google.cloud import storage\n\n    logging.info(\"Loading training data...\")\n    X_train = pd.read_csv(train_data.path+\".csv\")\n    y_train = pd.read_csv(train_lables.path+\".csv\")\n\n    logging.info(\"Start training ...\")\n    model = xgb.XGBClassifier(\n            scale_pos_weight=734,\n            max_depth=max_depth,\n            learning_rate=learning_rate\n    )\n    model.fit(X_train, y_train)\n\n    file_name = xgb_model.path + f\".pkl\"\n\n    logging.info(\"Saving model artifacts to {}\". format(file_name))\n    with open(file_name, 'wb') as file:  \n        pickle.dump(model, file)\n\n\n    logging.info(\"Training completed\")\n\n"
+            ],
+            "image": "python:3.9"
+          }
+        }
+      }
+    },
+    "pipelineInfo": {
+      "name": "fraud-xgboost"
+    },
+    "root": {
+      "dag": {
+        "outputs": {
+          "artifacts": {
+            "evaluate-model-metric": {
+              "artifactSelectors": [
+                {
+                  "outputArtifactKey": "metric",
+                  "producerSubtask": "evaluate-model"
+                }
+              ]
+            }
+          }
+        },
+        "tasks": {
+          "evaluate-model": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-evaluate-model"
+            },
+            "dependentTasks": [
+              "get-data",
+              "train-model"
+            ],
+            "inputs": {
+              "artifacts": {
+                "test_data": {
+                  "taskOutputArtifact": {
+                    "outputArtifactKey": "test_dataset",
+                    "producerTask": "get-data"
+                  }
+                },
+                "test_lables": {
+                  "taskOutputArtifact": {
+                    "outputArtifactKey": "test_lables",
+                    "producerTask": "get-data"
+                  }
+                },
+                "xgb_model": {
+                  "taskOutputArtifact": {
+                    "outputArtifactKey": "xgb_model",
+                    "producerTask": "train-model"
+                  }
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "evaluate-model"
+            }
+          },
+          "get-data": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-get-data"
+            },
+            "inputs": {
+              "parameters": {
+                "bq_table": {
+                  "componentInputParameter": "bq_table"
+                },
+                "project_id": {
+                  "componentInputParameter": "project_id"
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "get-data"
+            }
+          },
+          "train-model": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-train-model"
+            },
+            "dependentTasks": [
+              "get-data"
+            ],
+            "inputs": {
+              "artifacts": {
+                "train_data": {
+                  "taskOutputArtifact": {
+                    "outputArtifactKey": "train_dataset",
+                    "producerTask": "get-data"
+                  }
+                },
+                "train_lables": {
+                  "taskOutputArtifact": {
+                    "outputArtifactKey": "train_lables",
+                    "producerTask": "get-data"
+                  }
+                }
+              },
+              "parameters": {
+                "learning_rate": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "doubleValue": 6e-08
+                    }
+                  }
+                },
+                "max_depth": {
+                  "runtimeValue": {
+                    "constantValue": {
+                      "intValue": "1"
+                    }
+                  }
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "train-model"
+            }
+          }
+        }
+      },
+      "inputDefinitions": {
+        "parameters": {
+          "bq_table": {
+            "type": "STRING"
+          },
+          "learning_rate": {
+            "type": "DOUBLE"
+          },
+          "max_depth": {
+            "type": "INT"
+          },
+          "project_id": {
+            "type": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "evaluate-model-metric": {
+            "artifactType": {
+              "schemaTitle": "system.Metrics",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "schemaVersion": "2.0.0",
+    "sdkVersion": "kfp-1.8.18"
+  },
+  "runtimeConfig": {
+    "gcsOutputDirectory": "gs://bq-experiments-fraud/pipeline_root/custom_xgboost_training",
+    "parameters": {
+      "bq_table": {
+        "stringValue": "bq-experiments-350102.synthetic_financial_fraud.fraud_data"
+      },
+      "learning_rate": {
+        "doubleValue": 6e-08
+      },
+      "max_depth": {
+        "intValue": "1"
+      },
+      "project_id": {
+        "stringValue": "bq-experiments-350102"
+      }
+    }
+  }
+}

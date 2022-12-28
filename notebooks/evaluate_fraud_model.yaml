@@ -1,0 +1,49 @@
+name: Evaluate model
+inputs:
+- {name: xgb_model, type: Model}
+- {name: test_data, type: Dataset}
+- {name: test_lables, type: Dataset}
+outputs:
+- {name: metric, type: Metrics}
+implementation:
+  container:
+    image: python:3.9
+    command:
+    - sh
+    - -c
+    - |2
+
+      if ! [ -x "$(command -v pip)" ]; then
+          python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+      fi
+
+      PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'xgboost' 'scikit-learn==1.0.2' 'pandas' 'fsspec' 'gcsfs' 'google-cloud-storage' 'kfp==1.8.18' && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp -d)
+      printf "%s" "$0" > "$program_path/ephemeral_component.py"
+      python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+    - "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing\
+      \ import *\n\ndef evaluate_model(\n    xgb_model: Input[Model], \n    test_data:\
+      \ Input[Dataset], \n    test_lables: Input[Dataset],\n    metric: Output[Metrics]\n\
+      \n):\n    import pandas as pd\n    import logging\n    import pickle\n    import\
+      \ numpy as np\n    import xgboost as xgb\n    import json\n    import os\n\n\
+      \    from sklearn.metrics import f1_score\n    from google.cloud import storage\n\
+      \n    logging.info(\"Loading test data...\")\n    X_test = pd.read_csv(test_data.path+\"\
+      .csv\")\n    print('X_test shape: {}'.format(X_test.shape))\n    y_test = pd.read_csv(test_lables.path+\"\
+      .csv\")\n    print('y_test shape: {}'.format(y_test.shape))\n\n    print(\"\
+      restoring the model from {}\".format(xgb_model.path))\n    model = xgb.XGBClassifier()\n\
+      \    file_name = xgb_model.path + \".pkl\"\n    with open(file_name, 'rb') as\
+      \ file:  \n        model = pickle.load(file)\n    print(\"model restored\")\n\
+      \n    logging.info(\"Preparing test data ...\")\n    # data = xgb.DMatrix(X_test.values)\n\
+      \n    logging.info(\"Getting test predictions ...\")\n    y_pred = model.predict(X_test)\n\
+      \n    logging.info(\"Evaluating predictions ...\")\n    f1 = f1_score(y_test,\
+      \ y_pred, average='weighted')\n    logging.info(f\"Evaluation completed with\
+      \ weighted f1 score: {f1}\")\n\n    metric.log_metric(\"f1_score\", float(f1))\n\
+      \    logging.info(\"Finishing ...\")\n\n"
+    args:
+    - --executor_input
+    - {executorInput: null}
+    - --function_to_execute
+    - evaluate_model
